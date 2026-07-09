@@ -1,0 +1,203 @@
+﻿import { useEffect, useState } from 'react'
+import axios from 'axios'
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import { DollarSign, TrendingUp, Percent, Landmark } from 'lucide-react'
+import { ScrollReveal, CountUp } from '../components/ScrollReveal'
+import { usePageFocus } from '../hooks/usePageFocus'
+import Paginator from '../components/Paginator'
+
+const API = import.meta.env.VITE_API_URL
+const PAGE_SIZE = 15
+
+export default function Treasury() {
+  const [treasury, setTreasury] = useState(null)
+  const [trades, setTrades] = useState([])
+  const [feeHistory, setFeeHistory] = useState([])
+  const [page, setPage] = useState(1)
+
+  const fetchTreasuryAndTrades = () => {
+    Promise.all([
+      axios.get(`${API}/api/treasury`).catch(() => ({ data: null })),
+      axios.get(`${API}/api/trades?limit=500`).catch(() => ({ data: [] }))
+    ]).then(([t, tr]) => {
+      setTreasury(t.data)
+      const tradeData = tr.data || []
+      setTrades(tradeData)
+      const cumulative = []
+      let running = 0
+      ;[...tradeData].reverse().forEach((trade, i) => {
+        running += parseFloat(trade.fee)
+        if (i % 2 === 0) {
+          cumulative.push({ trade: i + 1, fees: parseFloat(running.toFixed(4)) })
+        }
+      })
+      setFeeHistory(cumulative)
+    }).catch(() => {})
+  }
+
+  useEffect(() => { fetchTreasuryAndTrades() }, [])
+  usePageFocus(fetchTreasuryAndTrades)
+
+  useEffect(() => {
+    const interval = setInterval(fetchTreasuryAndTrades, 15000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const totalVolume = trades.reduce((s, t) => s + parseFloat(t.total_cost), 0)
+  const avgFee = trades.length ? trades.reduce((s, t) => s + parseFloat(t.fee), 0) / trades.length : 0
+
+  // Paginate fee transactions (chronological)
+  const chronoTrades = [...trades].reverse()
+  const totalPages = Math.ceil(chronoTrades.length / PAGE_SIZE)
+  const pageStart = (page - 1) * PAGE_SIZE
+  const pageEnd = page * PAGE_SIZE
+
+  // Running total up to the start of this page
+  const runningBase = chronoTrades
+    .slice(0, pageStart)
+    .reduce((s, t) => s + parseFloat(t.fee), 0)
+
+  return (
+    <div className="fade-in">
+      <style>{`
+        @media (min-width: 768px) {
+          .treasury-stats-grid { grid-template-columns: repeat(4, 1fr) !important; }
+        }
+      `}</style>
+
+      <ScrollReveal delay={0}>
+        <div className="page-header">
+          <div className="page-title">Treasury & Finance</div>
+          <div className="page-subtitle">Exchange revenue, fees collected, and financial metrics</div>
+        </div>
+      </ScrollReveal>
+
+      <ScrollReveal delay={100}>
+        <div className="treasury-stats-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '20px' }}>
+          {[
+            { label: 'Total Fees Collected', value: parseFloat(treasury?.total_fees || 0),       prefix: '$', decimals: 4, icon: DollarSign, color: '#00b87a', bg: '#edfaf4' },
+            { label: 'Exchange Wallet',       value: parseFloat(treasury?.exchange_wallet || 0),  prefix: '$', decimals: 4, icon: Landmark,   color: '#2563eb', bg: '#eff4ff' },
+            { label: 'Total Trade Volume',    value: totalVolume,                                 prefix: '$', decimals: 2, icon: TrendingUp,  color: '#f5a623', bg: '#fff8ed' },
+            { label: 'Fee Rate',              value: 2,                                           prefix: '',  decimals: 2, suffix: '%', icon: Percent, color: '#7c3aed', bg: '#f5f0ff' },
+          ].map((s, i) => (
+            <div key={i} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <div style={{ fontSize: '0.55rem', color: 'var(--text3)', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '8px' }}>{s.label}</div>
+                <div style={{ fontSize: '1.1rem', fontWeight: 800, color: s.color, fontFamily: "'Sora', sans-serif" }}>
+                  <CountUp value={s.value} prefix={s.prefix} decimals={s.decimals} suffix={s.suffix || ''} />
+                </div>
+              </div>
+              <div style={{ background: s.bg, padding: '6px', borderRadius: '8px', flexShrink: 0 }}>
+                <s.icon size={14} color={s.color} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </ScrollReveal>
+
+      <ScrollReveal delay={150}>
+        <div className="grid-2" style={{ marginBottom: '20px' }}>
+          <div className="card">
+            <div className="card-header">
+              <div className="card-title">Cumulative Fees</div>
+              <span className="badge badge-green">GROWING</span>
+            </div>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={feeHistory}>
+                <XAxis dataKey="trade" tick={{ fontSize: 10, fill: '#8896a8' }} />
+                <YAxis tick={{ fontSize: 10, fill: '#8896a8' }} />
+                <Tooltip contentStyle={{ background: '#0d1117', border: '1px solid #1e2730', borderRadius: '8px', fontSize: '0.72rem' }} />
+                <Area type="monotone" dataKey="fees" stroke="#00b87a" fill="#00b87a20" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div className="card-title">Treasury Breakdown</div>
+            </div>
+            {[
+              { label: 'Total Trades Executed',  value: treasury?.total_trades || 0,    color: 'var(--blue)' },
+              { label: 'Total Tasks Attempted',  value: treasury?.total_tasks || 0,     color: 'var(--green)' },
+              { label: 'Avg Fee Per Trade',       value: `$${avgFee.toFixed(4)}`,        color: 'var(--gold)' },
+              { label: 'Total Volume Processed',  value: `$${totalVolume.toFixed(2)}`,   color: 'var(--purple)' },
+              { label: 'Exchange Operating Day',  value: `Day ${treasury?.exchange_day || 1}`, color: 'var(--text)' },
+              { label: 'Revenue Model',           value: '2% on every trade',            color: 'var(--text3)' },
+            ].map((item, i) => (
+              <div key={i} style={{
+                display: 'flex', justifyContent: 'space-between',
+                padding: '12px 0',
+                borderBottom: i < 5 ? '1px solid var(--border)' : 'none'
+              }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text2)' }}>{item.label}</span>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: item.color }}>{item.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </ScrollReveal>
+
+      <ScrollReveal delay={200}>
+        <div className="card">
+          <div className="card-header">
+            <div className="card-title">Fee Transactions</div>
+            <span className="badge badge-gray">{trades.length} trades</span>
+          </div>
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>TIME</th>
+                  <th>BUYER</th>
+                  <th>SELLER</th>
+                  <th>TRADE VALUE</th>
+                  <th>FEE COLLECTED</th>
+                  <th>RUNNING TOTAL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chronoTrades.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ textAlign: 'center', padding: '24px', color: 'var(--text3)', fontSize: '0.8rem' }}>
+                      No fee transactions yet
+                    </td>
+                  </tr>
+                ) : (
+                  (() => {
+                    let running = runningBase
+                    return chronoTrades.slice(pageStart, pageEnd).map((trade) => {
+                      running += parseFloat(trade.fee)
+                      return (
+                        <tr key={trade.id}>
+                          <td style={{ fontSize: '0.7rem', color: 'var(--text3)' }}>
+                            {new Date(trade.created_at).toLocaleTimeString()}
+                            <br />
+                            <span style={{ fontSize: '0.6rem' }}>{new Date(trade.created_at).toLocaleDateString()}</span>
+                          </td>
+                          <td style={{ fontWeight: 600, color: 'var(--text)' }}>{trade.buyer_ticker}</td>
+                          <td style={{ color: 'var(--text2)' }}>{trade.seller_ticker}</td>
+                          <td style={{ color: 'var(--blue)', fontWeight: 600 }}>${parseFloat(trade.total_cost).toFixed(2)}</td>
+                          <td style={{ color: 'var(--green)', fontWeight: 600 }}>${parseFloat(trade.fee).toFixed(4)}</td>
+                          <td style={{ color: 'var(--text)', fontWeight: 700 }}>${running.toFixed(4)}</td>
+                        </tr>
+                      )
+                    })
+                  })()
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {chronoTrades.length > 0 && (
+            <div style={{ padding: '12px 0 4px' }}>
+              <div style={{ textAlign: 'center', fontSize: '0.68rem', color: 'var(--text3)', marginBottom: 8 }}>
+                Showing {Math.min(pageStart + 1, chronoTrades.length)}–{Math.min(pageEnd, chronoTrades.length)} of {chronoTrades.length} transactions
+              </div>
+              <Paginator page={page} totalPages={totalPages} onChange={setPage} />
+            </div>
+          )}
+        </div>
+      </ScrollReveal>
+    </div>
+  )
+}

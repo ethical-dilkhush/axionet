@@ -1,0 +1,582 @@
+import { useEffect, useState } from 'react'
+import axios from 'axios'
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
+import { TrendingUp, TrendingDown, DollarSign, ArrowLeftRight, Zap, Users, AlertTriangle, Crown, X } from 'lucide-react'
+import AgentAvatar from '../components/AgentAvatar'
+import { ScrollReveal, CountUp } from '../components/ScrollReveal'
+import { API_BASE } from '../lib/config'
+import { socket } from '../lib/socket'
+
+const API = API_BASE
+
+const AGENT_COLORS = {
+  RAVI: '#00b87a', ZEUS: '#f5a623',
+  NOVA: '#7c3aed', BRAHMA: '#2563eb', KIRA: '#f03358'
+}
+
+
+function agentColor(ticker) {
+  const presets = { RAVI: '#00b87a', ZEUS: '#f5a623', NOVA: '#7c3aed', BRAHMA: '#2563eb', KIRA: '#f03358' }
+  if (presets[ticker]) return presets[ticker]
+  let h = 0
+  for (let i = 0; i < ticker.length; i++) h = (h + ticker.charCodeAt(i) * 47) % 360
+  return `hsl(${h}, 60%, 50%)`
+}
+
+export default function Dashboard({ agents: liveAgents, treasury: liveTreasury }) {
+  const [agents, setAgents] = useState(liveAgents || [])
+  const [treasury, setTreasury] = useState(liveTreasury || null)
+  const [activity, setActivity] = useState([])
+  const [activityUpdatedAt, setActivityUpdatedAt] = useState(null)
+  const [stats, setStats] = useState(null)
+  const [priceHistory, setPriceHistory] = useState([])
+  const [holdingsModalAgent, setHoldingsModalAgent] = useState(null)
+
+  const fetchPriceHistory = async (agentList) => {
+    if (!agentList?.length) return
+    const histories = await Promise.all(
+      agentList.map(a => axios.get(`${API}/api/price-history/${a.ticker}`).catch(() => ({ data: [] })))
+    )
+    const merged = {}
+    histories.forEach((h, i) => {
+      (h.data || []).forEach((point, j) => {
+        if (!merged[j]) merged[j] = { cycle: j + 1 }
+        merged[j][agentList[i].ticker] = parseFloat(point.price)
+      })
+    })
+    setPriceHistory(Object.values(merged))
+  }
+
+  const fetchAll = async () => {
+    try {
+      const [ag, tr, ac, st] = await Promise.all([
+        axios.get(`${API}/api/agents`).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/treasury`).catch(() => ({ data: null })),
+        axios.get(`${API}/api/activity?limit=8&fresh=1`).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/stats`).catch(() => ({ data: null }))
+      ])
+      setAgents(ag.data || [])
+      setTreasury(tr.data)
+      setActivity(ac.data || [])
+      setActivityUpdatedAt(new Date())
+      setStats(st.data)
+      fetchPriceHistory(ag.data)
+    } catch (err) {
+      console.error('Dashboard fetch error:', err)
+    }
+  }
+
+  useEffect(() => {
+    // Fast path: load agents immediately for Leader/Risk cards
+    Promise.all([
+      axios.get(`${API}/api/agents`).catch(() => ({ data: [] })),
+      axios.get(`${API}/api/treasury`).catch(() => ({ data: null }))
+    ]).then(([ag, tr]) => {
+      if (ag.data?.length) setAgents(ag.data)
+      if (tr.data) setTreasury(tr.data)
+    })
+    // Full load runs in parallel
+    fetchAll()
+  }, [])
+
+  useEffect(() => {
+    const applyActivity = (items) => {
+      if (items?.length) {
+        setActivity(items.slice(0, 8))
+        setActivityUpdatedAt(new Date())
+      }
+    }
+    const refreshActivity = () => {
+      axios.get(`${API}/api/activity?limit=8&fresh=1`)
+        .then(r => {
+          setActivity(r.data || [])
+          setActivityUpdatedAt(new Date())
+        })
+        .catch(() => {})
+    }
+    const onMarketEvent = (data) => {
+      if (data?.recentActivity?.length) applyActivity(data.recentActivity)
+      else refreshActivity()
+    }
+    const fullRefresh = () => fetchAll()
+    const pollInterval = setInterval(fullRefresh, 30000)
+    socket.on('trade-live', onMarketEvent)
+    socket.on('exchange-update', onMarketEvent)
+    return () => {
+      clearInterval(pollInterval)
+      socket.off('trade-live', onMarketEvent)
+      socket.off('exchange-update', onMarketEvent)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (liveAgents?.length) fetchPriceHistory(liveAgents)
+  }, [liveAgents])
+
+  useEffect(() => {
+    if (liveAgents?.length) setAgents(liveAgents)
+    if (liveTreasury) setTreasury(liveTreasury)
+  }, [liveAgents, liveTreasury])
+
+  const sorted = [...agents].sort((a, b) => b.price - a.price)
+  const leader = sorted[0]
+  const riskAgent = [...agents].filter(a => a.status === 'active').sort((a, b) => a.wallet - b.wallet)[0]
+
+  return (
+    <div className="fade-in">
+      <div className="page-header">
+        <div className="page-title">Exchange Overview</div>
+        <div className="page-subtitle">Real-time autonomous AI stock exchange — no human intervention</div>
+      </div>
+
+      {/* KPI Row */}
+      <ScrollReveal delay={0}>
+      <div className="grid-4" style={{ marginBottom: '20px' }}>
+        {[
+          {
+            label: 'Treasury Collected',
+            value: `$${parseFloat(treasury?.total_fees || 0).toFixed(2)}`,
+            sub: '+2% per trade',
+            icon: DollarSign,
+            color: '#34d399',
+            bg: 'rgba(16, 185, 129, 0.12)',
+            ring: 'rgba(16, 185, 129, 0.28)'
+          },
+          {
+            label: 'Total Trades',
+            value: treasury?.total_trades || 0,
+            sub: 'Agent vs Agent',
+            icon: ArrowLeftRight,
+            color: '#22d3ee',
+            bg: 'rgba(34, 211, 238, 0.12)',
+            ring: 'rgba(34, 211, 238, 0.28)'
+          },
+          {
+            label: 'Tasks Attempted',
+            value: treasury?.total_tasks || 0,
+            sub: 'Earning tasks',
+            icon: Zap,
+            color: '#fbbf24',
+            bg: 'rgba(245, 158, 11, 0.12)',
+            ring: 'rgba(245, 158, 11, 0.28)'
+          },
+          {
+            label: 'Active Agents',
+            value: agents.filter(a => a.status === 'active').length,
+            sub: `${agents.filter(a => a.status === 'bankrupt').length} bankrupt`,
+            icon: Users,
+            color: '#a78bfa',
+            bg: 'rgba(139, 92, 246, 0.14)',
+            ring: 'rgba(139, 92, 246, 0.32)'
+          }
+        ].map((kpi, i) => {
+          const valueStr = typeof kpi.value === 'string' ? kpi.value : String(kpi.value)
+          // Step the stat-number font down for long values so the prefix never gets clipped
+          const len = valueStr.length
+          const fit = len > 14 ? 'xxs' : len > 11 ? 'xs' : len > 8 ? 'sm' : len > 6 ? 'md' : undefined
+          return (
+            <div key={i} className="card kpi-card">
+              <div className="kpi-icon" style={{ background: kpi.bg, boxShadow: `0 0 0 1px ${kpi.ring}, 0 0 20px -4px ${kpi.bg}` }}>
+                <kpi.icon size={18} color={kpi.color} />
+              </div>
+              <div className="kpi-label">{kpi.label}</div>
+              <div className="stat-number kpi-value" data-fit={fit} title={valueStr} style={{ color: kpi.color }}>
+                <CountUp value={typeof kpi.value === 'string' ? kpi.value.replace(/[^0-9.]/g, '') : kpi.value}
+                  prefix={typeof kpi.value === 'string' && kpi.value.startsWith('$') ? '$' : ''}
+                  decimals={typeof kpi.value === 'string' && kpi.value.includes('.') ? 2 : 0}
+                />
+              </div>
+              <div className="kpi-sub">{kpi.sub}</div>
+            </div>
+          )
+        })}
+      </div>
+      </ScrollReveal>
+
+      <ScrollReveal delay={100}>
+      <div className="grid-2" style={{ marginBottom: '20px' }}>
+
+        {/* Price Chart */}
+        <div className="card" style={{ gridColumn: '1 / 2' }}>
+          <div className="card-header">
+            <div className="card-title">Price History</div>
+            <span className="badge badge-green">LIVE</span>
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={priceHistory}>
+              <XAxis dataKey="cycle" tick={{ fontSize: 10, fill: '#64748b' }} label={{ value: 'Cycle', position: 'insideBottom', fontSize: 10, fill: '#64748b' }} />
+              <YAxis tick={{ fontSize: 10, fill: '#64748b' }} domain={['auto', 'auto']} />
+              <Tooltip
+                contentStyle={{ background: '#0d1424', border: '1px solid rgba(167,139,250,0.22)', borderRadius: '12px', fontSize: '0.72rem', color: '#f1f5f9', boxShadow: '0 16px 40px -12px rgba(0,0,0,0.7), 0 0 0 1px rgba(167,139,250,0.08)', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+                labelStyle={{ color: '#a78bfa', fontWeight: 600 }}
+                itemStyle={{ color: '#ffffff' }}
+                cursor={{ stroke: 'rgba(167,139,250,0.25)', strokeWidth: 1 }}
+              />
+              {agents.map(a => (
+                <Line
+                  key={a.ticker}
+                  type="monotone"
+                  dataKey={a.ticker}
+                  stroke={AGENT_COLORS[a.ticker]}
+                  strokeWidth={2}
+                  dot={false}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: '16px', marginTop: '12px', flexWrap: 'wrap' }}>
+            {agents.map(a => (
+              <div key={a.ticker} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div style={{ width: '12px', height: '2px', background: AGENT_COLORS[a.ticker], borderRadius: '2px' }} />
+                <span style={{ fontSize: '0.65rem', color: 'var(--text3)' }}>{a.ticker}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Leader + Risk */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {leader && (
+            <div className="card" style={{
+              background: 'linear-gradient(135deg, #0d1424 0%, #1a1340 50%, #0a1f3a 100%)',
+              border: '1px solid rgba(167, 139, 250, 0.22)',
+              boxShadow: '0 16px 40px -12px rgba(0,0,0,0.6), 0 0 0 1px rgba(167,139,250,0.08)',
+              color: '#ffffff',
+              position: 'relative',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                position: 'absolute', inset: 0,
+                background: 'radial-gradient(420px 220px at 100% 0%, rgba(139, 92, 246, 0.25), transparent 60%), radial-gradient(360px 200px at 0% 100%, rgba(34, 211, 238, 0.14), transparent 60%)',
+                pointerEvents: 'none'
+              }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', position: 'relative' }}>
+                <div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.6rem', color: '#a78bfa', letterSpacing: '2.2px', marginBottom: '8px', fontWeight: 600, textTransform: 'uppercase' }}>
+                    Current Leader
+                  </div>
+                  <div style={{ fontFamily: "'Sora', sans-serif", fontSize: '1.9rem', fontWeight: 800, letterSpacing: '-0.025em', lineHeight: 1, background: 'linear-gradient(135deg, #ffffff 0%, #c4b5fd 100%)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                    {leader.ticker}
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginBottom: '10px', marginTop: '4px', fontWeight: 500 }}>{leader.full_name}</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '1.25rem', fontWeight: 700, color: '#34d399' }}>
+                    ${parseFloat(leader.price).toFixed(4)}
+                  </div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.7rem', color: '#34d399', marginTop: '2px', fontWeight: 600 }}>
+                    ▲ +{((parseFloat(leader.price) - 1) * 100).toFixed(2)}% since launch
+                  </div>
+                </div>
+                <Crown size={34} color="#a78bfa" style={{ opacity: 0.7, filter: 'drop-shadow(0 4px 16px rgba(139, 92, 246, 0.6))' }} />
+              </div>
+              <div style={{ display: 'flex', gap: '20px', marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', position: 'relative' }}>
+                <div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.58rem', color: '#64748b', letterSpacing: '1.2px', fontWeight: 600 }}>TASKS WON</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.92rem', color: '#34d399', fontWeight: 700, marginTop: '2px' }}>{leader.tasks_completed}</div>
+                </div>
+                <div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.58rem', color: '#64748b', letterSpacing: '1.2px', fontWeight: 600 }}>TASKS LOST</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.92rem', color: '#f87171', fontWeight: 700, marginTop: '2px' }}>{leader.tasks_failed}</div>
+                </div>
+                <div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.58rem', color: '#64748b', letterSpacing: '1.2px', fontWeight: 600 }}>WALLET</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.92rem', color: '#ffffff', fontWeight: 700, marginTop: '2px' }}>${parseFloat(leader.wallet).toFixed(2)}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {riskAgent && parseFloat(riskAgent.wallet) < 3 && (
+            <div className="card" style={{ background: 'var(--gold-bg)', border: '1px solid var(--gold-border)' }}>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                <AlertTriangle size={20} color="var(--gold)" style={{ flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <div style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: '0.7rem', fontWeight: 700, color: 'var(--gold-2)', marginBottom: '4px', letterSpacing: '0.6px', textTransform: 'uppercase' }}>
+                    Bankruptcy Warning
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--gold-2)', lineHeight: 1.55 }}>
+                    <strong>{riskAgent.ticker}</strong> has only ${parseFloat(riskAgent.wallet).toFixed(2)} left in wallet.
+                    Bankruptcy triggers at $0.10.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        </div>
+      </ScrollReveal>
+
+      {/* Top Gainers + Biggest Drops */}
+      {(() => {
+        const withPct = agents.map(a => ({ ...a, pct: (parseFloat(a.price || 1) - 1) * 100 }))
+        const gainers = [...withPct].filter(a => a.pct >= 0).sort((a, b) => b.pct - a.pct).slice(0, 5)
+        const drops = [...withPct].filter(a => a.pct < 0).sort((a, b) => a.pct - b.pct).slice(0, 5)
+
+        const renderRow = (a, i, isGainer) => {
+          const color = isGainer ? 'var(--green)' : 'var(--red)'
+          return (
+            <div key={a.ticker} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '7px 0', borderBottom: '1px solid var(--border)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text3)', width: 18, textAlign: 'right' }}>#{i + 1}</span>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: AGENT_COLORS[a.ticker] || agentColor(a.ticker), flexShrink: 0 }} />
+                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>{a.ticker}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, color }}>${parseFloat(a.price).toFixed(4)}</span>
+                <span style={{ fontSize: '0.68rem', fontWeight: 600, color, minWidth: 62, textAlign: 'right' }}>
+                  {isGainer ? '▲' : '▼'} {Math.abs(a.pct).toFixed(2)}%
+                </span>
+              </div>
+            </div>
+          )
+        }
+
+        return (
+          <ScrollReveal delay={200}>
+          <div className="grid-2" style={{ marginBottom: 20 }}>
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title" style={{ color: 'var(--green)' }}>TOP GAINERS 🟢</div>
+                <span className="badge badge-green">TOP 5</span>
+              </div>
+              {gainers.length === 0 && <div style={{ padding: 16, textAlign: 'center', color: 'var(--text3)', fontSize: '0.72rem' }}>No gainers yet</div>}
+              {gainers.map((a, i) => renderRow(a, i, true))}
+            </div>
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title" style={{ color: 'var(--red)' }}>BIGGEST DROPS 🔴</div>
+                <span className="badge badge-red">TOP 5</span>
+              </div>
+              {drops.length === 0 && <div style={{ padding: 16, textAlign: 'center', color: 'var(--text3)', fontSize: '0.72rem' }}>No drops yet</div>}
+              {drops.map((a, i) => renderRow(a, i, false))}
+            </div>
+            </div>
+          </ScrollReveal>
+        )
+      })()}
+
+      <ScrollReveal delay={300}>
+      {/* All Agents Table */}
+      {(() => {
+        const visible = agents.filter(a => ['active', 'dominant', 'bankrupt'].includes(a.status))
+        if (visible.length === 0) return null
+        return (
+          <div className="card" style={{ marginBottom: 20 }}>
+            <div className="card-header">
+              <div className="card-title">All Agents</div>
+              <span className="badge badge-green">{visible.length}</span>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="data-table" style={{ width: '100%' }}>
+                <thead>
+                  <tr>
+                    <th>Ticker</th><th>Full Name</th><th>Style</th>
+                    <th style={{ textAlign: 'right' }}>Price</th>
+                    <th style={{ textAlign: 'right' }}>Change %</th>
+                    <th style={{ textAlign: 'right' }}>Wallet</th>
+                    <th>Holdings</th>
+                    <th>Creator</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map(a => {
+                    const color = AGENT_COLORS[a.ticker] || agentColor(a.ticker)
+                    const price = parseFloat(a.price || 1)
+                    const pct = ((price - 1) / 1) * 100
+                    const up = pct >= 0
+                    const handle = (a.creator_twitter || '').replace(/^@/, '')
+                    const hasHoldings = a.shares_owned && typeof a.shares_owned === 'object' && Object.keys(a.shares_owned).length > 0
+                    return (
+                      <tr key={a.ticker}>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <AgentAvatar ticker={a.ticker} avatarUrl={a.avatar_url} size="sm" />
+                            <strong>${a.ticker}</strong>
+                          </div>
+                        </td>
+                        <td>{a.full_name}</td>
+                        <td style={{ fontSize: '0.68rem', color: 'var(--text2)' }}>{a.style}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700, color: up ? 'var(--green)' : 'var(--red)' }}>
+                          ${price.toFixed(4)}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600, color: up ? 'var(--green)' : 'var(--red)' }}>
+                          {up ? '▲' : '▼'} {Math.abs(pct).toFixed(2)}%
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          ${parseFloat(a.wallet || 0).toFixed(2)}
+                        </td>
+                        <td>
+                          {hasHoldings ? (
+                            <button
+                              type="button"
+                              onClick={() => setHoldingsModalAgent(a)}
+                              className="badge badge-green"
+                              style={{ cursor: 'pointer', border: 'none', font: 'inherit' }}
+                            >
+                              See
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled
+                              className="badge badge-red"
+                              style={{ cursor: 'not-allowed', border: 'none', font: 'inherit', opacity: 0.6 }}
+                            >
+                              No
+                            </button>
+                          )}
+                        </td>
+                        <td style={{ fontSize: '0.68rem' }}>
+                          {a.creator_name && <span>{a.creator_name}</span>}
+                          {!a.creator_name && !handle && <span style={{ color: 'var(--text3)' }}>Anonymous</span>}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      })()}
+
+</ScrollReveal>
+
+<ScrollReveal delay={400}>
+{/* Activity Feed Preview */}
+<div className="card">
+        <div className="card-header">
+          <div className="card-title">Recent Activity</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {activityUpdatedAt && (
+              <span style={{ fontSize: '0.62rem', color: 'var(--text3)' }}>
+                Updated {activityUpdatedAt.toLocaleTimeString()}
+              </span>
+            )}
+            <span className="badge badge-red">LIVE</span>
+          </div>
+        </div>
+        {activity.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text3)', fontSize: '0.8rem' }}>
+            No activity yet. Trades run about every 45s when at least 2 agents are approved (active).
+            Restart the backend if you do not see [exchange] logs in the terminal.
+          </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+          {activity.map((item, i) => (
+            <div key={item.id} style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '10px 0',
+              borderBottom: i < activity.length - 1 ? '1px solid var(--border)' : 'none'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  background: (AGENT_COLORS[item.agent_ticker] || agentColor(item.agent_ticker || '')) + '18',
+                  color: AGENT_COLORS[item.agent_ticker] || agentColor(item.agent_ticker || ''),
+                  padding: '4px 9px',
+                  borderRadius: '999px',
+                  fontSize: '0.65rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.3px',
+                  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                  border: '1px solid ' + ((AGENT_COLORS[item.agent_ticker] || agentColor(item.agent_ticker || '')) + '40')
+                }}>
+                  {item.agent_ticker}
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text2)' }}>{item.action}</span>
+              </div>
+              <div style={{ display: 'flex', align: 'center', gap: '12px' }}>
+                {parseFloat(item.amount) > 0 ? (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--green)', fontWeight: 600 }}>
+                    +${parseFloat(item.amount).toFixed(2)}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 500 }}>
+                    $0.00
+                  </span>
+                )}
+                <span style={{ fontSize: '0.65rem', color: 'var(--text3)' }}>
+                {new Date(item.created_at.endsWith('Z') || item.created_at.includes('+') ? item.created_at : item.created_at + 'Z').toLocaleTimeString()}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      </ScrollReveal>
+
+      {holdingsModalAgent && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Holdings details"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={() => setHoldingsModalAgent(null)}
+        >
+          <div
+            style={{
+              background: 'var(--bg2)',
+              border: '1px solid var(--border)',
+              borderRadius: '12px',
+              padding: '20px',
+              minWidth: '280px',
+              maxWidth: '90vw',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text)' }}>
+                {holdingsModalAgent.ticker} — Holdings
+              </span>
+              <button
+                type="button"
+                onClick={() => setHoldingsModalAgent(null)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '4px',
+                  color: 'var(--text3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text2)' }}>
+              {holdingsModalAgent.shares_owned && typeof holdingsModalAgent.shares_owned === 'object' && Object.keys(holdingsModalAgent.shares_owned).length > 0
+                ? Object.entries(holdingsModalAgent.shares_owned).map(([ticker, o]) => {
+                    const shares = o?.shares ?? o
+                    const avg = o?.avg_buy_price != null ? parseFloat(o.avg_buy_price).toFixed(4) : null
+                    return (
+                      <div key={ticker} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                        {ticker} — {shares} share{shares !== 1 ? 's' : ''}{avg != null ? ` @ $${avg}` : ''}
+                      </div>
+                    )
+                  })
+                : <div style={{ padding: '8px 0', color: 'var(--text3)' }}>No holdings</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  )
+}
