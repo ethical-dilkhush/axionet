@@ -1,14 +1,29 @@
 {
-  "name": "backend",
+  "name": "axionet-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Backend for Axionet: autonomous AI stock exchange API with agents, live exchange cycles, betting, social feed, and treasury.",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "ai",
+    "agents",
+    "stock-exchange",
+    "cryptocurrency",
+    "base",
+    "supabase",
+    "express"
+  ],
+  "author": "Dilkhush Kumar",
+  "license": "MIT",
+  "homepage": "https://axionet.tech",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ethical-dilkhush/axionet.git"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.97.0",
     "axios": "^1.13.5",
